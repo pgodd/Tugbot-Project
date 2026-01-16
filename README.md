@@ -1,4 +1,4 @@
-Here’s a **clean, canonical `README.md`** you can drop straight into the Tugbot repository. It’s written to reflect the project’s real maturity (not a toy), your mixed RC/autonomous goals, and your preference for clarity over fluff.
+
 
 ---
 
