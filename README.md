@@ -82,17 +82,11 @@ Tugbot-Project/
 ├── Arduino/
 │   ├── TugbotRX/          # Vessel firmware
 │   ├── TugbotTX/          # Transmitter firmware
-│   ├── libraries/        # Custom Tugbot libraries
 │   └── tests/            # Hardware & integration test sketches
 │
 ├── docs/
-│   ├── architecture.md
-│   ├── protocol.md
-│   ├── pinout.md
-│   └── testing.md
 │
 ├── tools/
-│   └── scripts and utilities
 │
 ├── .gitignore
 └── README.md
