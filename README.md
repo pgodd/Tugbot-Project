@@ -79,7 +79,7 @@ Canon radio note:
 
 ```
 Tugbot-Project/
-├── Arduino/
+├── Sketches/
 │   ├── TugbotRX/          # Vessel firmware
 │   ├── TugbotTX/          # Transmitter firmware
 │   └── tests/            # Hardware & integration test sketches
