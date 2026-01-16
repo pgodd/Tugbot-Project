@@ -1,5 +1,12 @@
 // -----------------------------------------------------------------------------
 // File:        TugbotGps.h
+// Project:     Tugbot
+// Role:        UNCLASSIFIED
+// Target:      UNKNOWN
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// File:        TugbotGps.h
 // Project:     Tugbot v1.0.0-beta
 // Module:      GPS wrapper (TinyGPSPlus on Serial1)
 // Revision:    1.0.0

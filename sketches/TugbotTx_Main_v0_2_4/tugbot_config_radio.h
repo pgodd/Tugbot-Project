@@ -1,3 +1,10 @@
+// -----------------------------------------------------------------------------
+// File:        tugbot_config_radio.h
+// Project:     Tugbot
+// Role:        TRANSMITTER (TX)
+// Target:      ESP32-WROOM
+// -----------------------------------------------------------------------------
+
 #pragma once
 #include <Arduino.h>
 #include <RF24.h>

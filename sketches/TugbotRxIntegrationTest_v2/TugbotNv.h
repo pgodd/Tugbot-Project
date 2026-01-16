@@ -1,5 +1,12 @@
 // -----------------------------------------------------------------------------
 // File:        TugbotNv.h
+// Project:     Tugbot
+// Role:        UNCLASSIFIED
+// Target:      UNKNOWN
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// File:        TugbotNv.h
 // Project:     Tugbot v1.0.0-beta
 // Module:      NVRAM (EEPROM) configuration storage
 // Revision:    1.0.0

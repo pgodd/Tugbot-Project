@@ -1,3 +1,10 @@
+// -----------------------------------------------------------------------------
+// File:        TugbotInputEncoder.h
+// Project:     Tugbot
+// Role:        TRANSMITTER (TX)
+// Target:      ESP32-WROOM
+// -----------------------------------------------------------------------------
+
 #pragma once
 #include <Arduino.h>
 #include "TugbotInputModel.h"

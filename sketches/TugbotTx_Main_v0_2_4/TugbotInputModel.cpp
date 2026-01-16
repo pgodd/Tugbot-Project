@@ -1,3 +1,10 @@
+// -----------------------------------------------------------------------------
+// File:        TugbotInputModel.cpp
+// Project:     Tugbot
+// Role:        TRANSMITTER (TX)
+// Target:      ESP32-WROOM
+// -----------------------------------------------------------------------------
+
 #include "TugbotInputModel.h"
 
 int TugbotInputModel::ClampPct(int v)
