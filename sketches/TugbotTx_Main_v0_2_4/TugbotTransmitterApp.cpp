@@ -1,3 +1,10 @@
+// -----------------------------------------------------------------------------
+// File:        TugbotTransmitterApp.cpp
+// Project:     Tugbot
+// Role:        TRANSMITTER (TX)
+// Target:      ESP32-WROOM
+// -----------------------------------------------------------------------------
+
 #include "TugbotTransmitterApp.h"
 
 #include "tugbot_cmd_frames.h"

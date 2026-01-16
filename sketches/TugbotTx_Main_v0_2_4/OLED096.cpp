@@ -1,3 +1,10 @@
+// -----------------------------------------------------------------------------
+// File:        OLED096.cpp
+// Project:     Tugbot
+// Role:        TRANSMITTER (TX)
+// Target:      ESP32-WROOM
+// -----------------------------------------------------------------------------
+
 #include "OLED096.h"
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>

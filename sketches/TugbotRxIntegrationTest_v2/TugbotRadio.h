@@ -1,5 +1,12 @@
 // -----------------------------------------------------------------------------
 // File:        TugbotRadio.h
+// Project:     Tugbot
+// Role:        UNCLASSIFIED
+// Target:      UNKNOWN
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// File:        TugbotRadio.h
 // Project:     Tugbot v1.0.0-beta
 // Module:      NRF24L01 radio wrapper + self-test
 // Revision:    1.0.0

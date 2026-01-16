@@ -1,3 +1,11 @@
+// -----------------------------------------------------------------------------
+// File:        TugbotInputEncoder.cpp
+// Project:     Tugbot
+// Role:        TRANSMITTER (TX)
+// Target:      ESP32-WROOM
+// -----------------------------------------------------------------------------
+
+
 #include "TugbotInputEncoder.h"
 
 static const int8_t kQuadTable[16] =
