@@ -175,9 +175,4 @@ Tugbot exists to answer one question:
 
 > *What happens when you stop treating a model boat like a toy and start treating it like a vessel?*
 
-If you want, next steps could be:
 
-* `architecture.md` draft
-* `protocol.md` formal spec
-* A **one-page “how to test Tugbot safely”** doc
-* Or tightening this README even further for outsiders vs contributors
