@@ -10,6 +10,8 @@
 #include "TugbotRadio.h"
 #include <SPI.h>
 #include <RF24.h>
+#include "pins_radio_rx_mega.h"
+#include "tugbot_config_radio.h"
 
 // Single global RF24 instance for this translation unit.
 // Uses canonical pins from pins_tugbot.h: CE=48, CSN=49
@@ -17,7 +19,9 @@ static RF24 radio(PIN_NRF24_CE, PIN_NRF24_CSN);
 
 TugbotRadio::TugbotRadio()
 : _initialised(false),
-  _present(false)
+  _present(false),
+  _lastRxMs(0),
+  _stats{0, 0, 0}
 {
 }
 
@@ -28,17 +32,29 @@ void TugbotRadio::begin()
         return;
     }
 
+    AvrSpiForceMaster();
+
     // SPI is started inside RF24::begin()
     radio.begin();
 
-    // Conservative basic config; we aren't actually sending data yet.
-    radio.setPALevel(RF24_PA_LOW);
-    radio.setDataRate(RF24_1MBPS);
-    radio.setChannel(108); // away from WiFi, arbitrary but sane
+    // Canon radio config (mirror TX settings)
+    radio.setChannel(NRF_CHANNEL);
+    radio.setDataRate(NRF_DATARATE);
+    radio.setCRCLength(NRF_CRC);
+    radio.setPALevel(NRF_PA_LEVEL);
 
-    // Avoid auto-ack & payload complexity for now
-    radio.setAutoAck(false);
+    radio.setAutoAck(NRF_AUTO_ACK);
+    if (NRF_ACK_PAYLOAD)
+    {
+        radio.enableAckPayload();
+    }
+    radio.setRetries(NRF_RETRY_DELAY, NRF_RETRY_COUNT);
+
     radio.disableDynamicPayloads();
+    radio.setPayloadSize(sizeof(NrfCmdFrame));
+    radio.openReadingPipe(1, NRF_ADDR_RX);
+    radio.openWritingPipe(NRF_ADDR_TX);
+    radio.startListening();
 
     _initialised = true;
 
@@ -63,4 +79,35 @@ bool TugbotRadio::selfTest()
 
     _present = ok;
     return ok;
+}
+
+bool TugbotRadio::readLatest(NrfCmdFrame &frameOut)
+{
+    if (!_initialised)
+    {
+        return false;
+    }
+
+    bool gotFrame = false;
+    while (radio.available())
+    {
+        radio.read(&frameOut, sizeof(frameOut));
+        gotFrame = true;
+    }
+
+    if (!gotFrame)
+    {
+        return false;
+    }
+
+    if (frameOut.magic != NRF_MAGIC_CMD)
+    {
+        _stats.framesBadMagic++;
+        return false;
+    }
+
+    _stats.framesOk++;
+    _stats.lastSeq = frameOut.seq;
+    _lastRxMs = millis();
+    return true;
 }

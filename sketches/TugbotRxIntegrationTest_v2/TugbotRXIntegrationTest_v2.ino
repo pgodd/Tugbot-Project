@@ -44,6 +44,7 @@
 #include "TugbotEngineer.h"
 #include "tugbot_config_engineer.h"
 #include "TugbotRadio.h"
+#include "tugbot_config_radio.h"
 
 // -----------------------------------------------------------------------------
 // Globals
@@ -64,6 +65,16 @@ TugbotRadio           g_radio;
 Servo                 g_rudderServo;
 
 uint32_t g_lastUpdateMs = 0;
+uint32_t g_serialStartMs = 0;
+uint32_t g_radioInitAfterMs = 0;
+bool     g_radioReady = false;
+
+static const uint32_t kRadioCmdTimeoutMs = 600;
+
+NrfCmdFrame g_lastCmd{};
+bool        g_hasCmd = false;
+uint32_t    g_lastCmdMs = 0;
+uint32_t    g_lastCmdSeq = 0;
 
 // --- EVT change tracking ----------------------------------------------------
 EnergyClass        g_lastEnergyClass    = EnergyClass::OK;
@@ -71,6 +82,7 @@ EngineerTempClass  g_lastTempClass      = EngineerTempClass::NORMAL;
 bool               g_lastWaterIngress   = false;
 bool               g_lastRadioPresent   = false;
 bool               g_lastBilgePumpOn    = false;
+bool               g_lastLinkOk         = false;
 
 // -----------------------------------------------------------------------------
 // Small helpers for breadcrumb printing
@@ -90,6 +102,44 @@ static void stepPrint2(const __FlashStringHelper* msg, bool ok)
     Serial.flush();
 }
 
+static float pctToNorm(int8_t pct)
+{
+    return constrain(pct / 100.0f, -1.0f, 1.0f);
+}
+
+static bool linkOk(uint32_t now)
+{
+    return g_hasCmd && (now - g_lastCmdMs) <= kRadioCmdTimeoutMs;
+}
+
+static void initRadioIfReady(uint32_t now)
+{
+    if (g_radioReady || now < g_radioInitAfterMs)
+    {
+        return;
+    }
+
+    stepPrint(F("STEP 10: g_radio.begin()..."));
+    g_radio.begin();
+    stepPrint(F("STEP 10: g_radio.begin() returned"));
+
+    stepPrint(F("STEP 10b: g_radio.selfTest()..."));
+    bool radioOk = g_radio.selfTest();
+    stepPrint2(F("STEP 10b: selfTest -> "), radioOk);
+
+    g_lastRadioPresent = radioOk;
+
+    Serial.print(F("NRF24 present: "));
+    Serial.println(radioOk ? F("YES") : F("NO"));
+
+    Serial.print(F("EVT,"));
+    Serial.print(now);
+    Serial.print(F(",RADIO,"));
+    Serial.println(radioOk ? F("1") : F("0"));
+
+    g_radioReady = true;
+}
+
 // -----------------------------------------------------------------------------
 // Setup
 // -----------------------------------------------------------------------------
@@ -97,7 +147,8 @@ static void stepPrint2(const __FlashStringHelper* msg, bool ok)
 void setup()
 {
     Serial.begin(115200);
-    while (!Serial) { }  // keep (works well on boards that enumerate USB CDC)
+    g_serialStartMs = millis();
+    g_radioInitAfterMs = g_serialStartMs + NRF_SERIAL_SETTLE_MS;
 
     Serial.println();
     Serial.println(F("TugbotIntegrationTest_v2 starting..."));
@@ -199,25 +250,8 @@ void setup()
     digitalWrite(PIN_BTS_REN, HIGH);
     stepPrint(F("STEP 9: BTS7960 enabled OK"));
 
-    // STEP 10: Radio begin + self test
-    stepPrint(F("STEP 10: g_radio.begin()..."));
-    g_radio.begin();
-    stepPrint(F("STEP 10: g_radio.begin() returned"));
-
-    stepPrint(F("STEP 10b: g_radio.selfTest()..."));
-    bool radio_ok = g_radio.selfTest();
-    stepPrint2(F("STEP 10b: selfTest -> "), radio_ok);
-
-    g_lastRadioPresent = radio_ok;
-
-    Serial.print(F("NRF24 present: "));
-    Serial.println(radio_ok ? F("YES") : F("NO"));
-
-    // Initial EVT snapshot for radio
-    Serial.print(F("EVT,"));
-    Serial.print(millis());
-    Serial.print(F(",RADIO,"));
-    Serial.println(radio_ok ? F("1") : F("0"));
+    // STEP 10: Radio begin is deferred until Serial settle timeout
+    stepPrint(F("STEP 10: radio init deferred for serial settle."));
 
     Serial.println(F("Entering integration test loop..."));
     Serial.flush();
@@ -232,6 +266,20 @@ void loop()
     uint32_t now = millis();
 
     // Fast sensor/service updates (as often as possible)
+    initRadioIfReady(now);
+
+    if (g_radioReady)
+    {
+        NrfCmdFrame cmd{};
+        if (g_radio.readLatest(cmd))
+        {
+            g_lastCmd = cmd;
+            g_hasCmd = true;
+            g_lastCmdMs = now;
+            g_lastCmdSeq = cmd.seq;
+        }
+    }
+
     TugbotGps::update();
     TugbotCompass::update();
     g_energy.update(now);
@@ -296,8 +344,7 @@ void loop()
         g_lastWaterIngress = eng.waterIngress;
     }
 
-    // Radio presence change
-    bool radioPresent = g_radio.isPresent();
+    bool radioPresent = g_radioReady && g_radio.isPresent();
     if (radioPresent != g_lastRadioPresent)
     {
         Serial.print(F("EVT,"));
@@ -308,6 +355,22 @@ void loop()
         Serial.print(radioPresent ? F("1") : F("0"));       // new
         Serial.println();
         g_lastRadioPresent = radioPresent;
+    }
+
+    // Radio link change (valid command stream)
+    bool linkOkNow = linkOk(now);
+    if (linkOkNow != g_lastLinkOk)
+    {
+        Serial.print(F("EVT,"));
+        Serial.print(now);
+        Serial.print(F(",LINK,"));
+        Serial.print(g_lastLinkOk ? F("1") : F("0")); // old
+        Serial.print(F(","));
+        Serial.print(linkOkNow ? F("1") : F("0"));    // new
+        Serial.print(F(","));
+        Serial.print(g_lastCmdSeq);
+        Serial.println();
+        g_lastLinkOk = linkOkNow;
     }
 
     // Bilge pump change
@@ -327,26 +390,22 @@ void loop()
 
     // ---------------- Synthetic control inputs -----------------------------
 
-    static float th    = 0.0f;
-    static float thDir = 1.0f;
+    float throttleIn = 0.0f;
+    float steerIn = 0.0f;
+    bool armed = false;
 
-    th += thDir * 0.02f;
-    if (th > 0.5f)
+    if (linkOkNow)
     {
-        th = 0.5f;
-        thDir = -1.0f;
+        armed = (g_lastCmd.flags & 0x01U) != 0U;
+        if (armed)
+        {
+            throttleIn = pctToNorm(g_lastCmd.thrPct);
+            steerIn = pctToNorm(g_lastCmd.rudPct);
+        }
     }
-    else if (th < -0.5f)
-    {
-        th = -0.5f;
-        thDir = 1.0f;
-    }
-
-    float tSec    = now / 1000.0f;
-    float steerIn = sinf(tSec * 0.4f);
 
     // Apply energy-based throttle limit
-    float thLimited = th * es.throttleLimitNorm;
+    float thLimited = throttleIn * es.throttleLimitNorm;
 
     // Motion update
     g_motion.update(thLimited, steerIn, now);
@@ -381,10 +440,10 @@ void loop()
     float thActual = g_motion.getThrottleActualNorm();
     float thMag    = fabs(thActual);
 
-    g_effects.setEngineSoundLevel(thMag);
+    g_effects.setEngineSoundLevel(armed ? thMag : 0.0f);
 
     float smokeLevel = 0.0f;
-    if (es.effectsAllowed && eng.tempClass != EngineerTempClass::CRIT && thMag > 0.1f)
+    if (armed && es.effectsAllowed && eng.tempClass != EngineerTempClass::CRIT && thMag > 0.1f)
     {
         smokeLevel = (thMag - 0.1f) / 0.9f;
     }
@@ -402,10 +461,10 @@ void loop()
     float speedM  = gpsState.hasFix ? gpsState.speed_mps   : 0.0f;
     float heading = compState.hasHeading ? compState.heading_deg : 0.0f;
 
-    uint8_t mode      = 0; // MANUAL placeholder
+    uint8_t mode      = linkOkNow ? g_lastCmd.mode : 0;
     uint8_t profile   = g_motion.getActiveProfile();
     uint8_t battState = (uint8_t)es.cls;
-    uint8_t radio_ok  = g_radio.isPresent() ? 1 : 0;
+    uint8_t radio_ok  = linkOkNow ? 1 : 0;
 
     // ---------------- TELEMETRY: STATE LINE ---------------------------------
     Serial.print(F("STATE,"));
@@ -423,7 +482,7 @@ void loop()
     Serial.print(F(","));
     Serial.print(g_motion.getRudderTargetDeg(), 2); // rudder_cmd_deg
     Serial.print(F(","));
-    Serial.print(th, 3);                      // throttle_input_norm
+    Serial.print(throttleIn, 3);              // throttle_input_norm
     Serial.print(F(","));
     Serial.print(steerIn, 3);                 // steer_input_norm
     Serial.print(F(","));

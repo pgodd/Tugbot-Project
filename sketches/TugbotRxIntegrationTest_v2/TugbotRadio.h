@@ -29,6 +29,7 @@
 
 #include <Arduino.h>
 #include "pins_tugbot.h"
+#include "tugbot_cmd_frames.h"
 
 class TugbotRadio
 {
@@ -42,13 +43,29 @@ public:
     // Safe to call multiple times; caches result.
     bool selfTest();
 
+    // Read the most recent command frame available on the RX pipe.
+    // Returns true only when a valid frame (magic OK) was received.
+    bool readLatest(NrfCmdFrame &frameOut);
+
     // Accessors
     bool isPresent()  const { return _present; }
     bool isInitialised() const { return _initialised; }
+    uint32_t lastRxMs() const { return _lastRxMs; }
+
+    struct Stats
+    {
+        uint32_t framesOk;
+        uint32_t framesBadMagic;
+        uint32_t lastSeq;
+    };
+
+    const Stats &stats() const { return _stats; }
 
 private:
     bool _initialised;
     bool _present;
+    uint32_t _lastRxMs;
+    Stats _stats;
 };
 
 #endif // TUGBOT_RADIO_H
