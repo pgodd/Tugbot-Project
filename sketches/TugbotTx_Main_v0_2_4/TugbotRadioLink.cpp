@@ -33,18 +33,30 @@ void TugbotRadioLink::ApplyCanonConfig()
     _radio.setPALevel(NRF_PA_LEVEL);
 
     _radio.setAutoAck(NRF_AUTO_ACK);
-    if (NRF_ACK_PAYLOAD) { _radio.enableAckPayload(); }
+    if (NRF_USE_ACK_PAYLOAD) { _radio.enableAckPayload(); }
     _radio.setRetries(NRF_RETRY_DELAY, NRF_RETRY_COUNT);
 
-    _radio.setPayloadSize(sizeof(NrfCmdFrame));
-    _radio.openWritingPipe(NRF_ADDR_RX);
-    _radio.openReadingPipe(1, NRF_ADDR_TX);
+    if (NRF_USE_DYNAMIC_PAYLOADS)
+    {
+        _radio.enableDynamicPayloads();
+    }
+    else
+    {
+        _radio.disableDynamicPayloads();
+        _radio.setPayloadSize(NRF_FIXED_PAYLOAD_BYTES);
+    }
+
+    _radio.openWritingPipe(NRF_ADDR_RX_BYTES);
+    _radio.openReadingPipe(1, NRF_ADDR_RX_BYTES);
     _radio.stopListening();
 }
 
 bool TugbotRadioLink::SendCmd(const NrfCmdFrame& frame)
 {
-    _radio.setPayloadSize(sizeof(NrfCmdFrame));
+    if (!NRF_USE_DYNAMIC_PAYLOADS)
+    {
+        _radio.setPayloadSize(NRF_FIXED_PAYLOAD_BYTES);
+    }
 
     bool ok = _radio.write(&frame, sizeof(frame));
     if (ok)

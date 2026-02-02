@@ -29,7 +29,7 @@
 
 #include <Arduino.h>
 #include "pins_tugbot.h"
-#include "tugbot_cmd_frames.h"
+#include <tugbot_cmd_frames.h>
 
 class TugbotRadio
 {
@@ -56,6 +56,7 @@ public:
     {
         uint32_t framesOk;
         uint32_t framesBadMagic;
+        uint32_t framesBadSize;
         uint32_t lastSeq;
     };
 

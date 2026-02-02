@@ -44,7 +44,7 @@
 #include "TugbotEngineer.h"
 #include "tugbot_config_engineer.h"
 #include "TugbotRadio.h"
-#include "tugbot_config_radio.h"
+#include <tugbot_config_radio.h>
 
 // -----------------------------------------------------------------------------
 // Globals
