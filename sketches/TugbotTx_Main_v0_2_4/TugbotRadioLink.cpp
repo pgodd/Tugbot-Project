@@ -58,7 +58,7 @@ bool TugbotRadioLink::SendCmd(const NrfCmdFrame& frame)
         _radio.setPayloadSize(NRF_FIXED_PAYLOAD_BYTES);
     }
 
-    bool ok = _radio.write(&frame, sizeof(frame));
+    bool ok = _radio.write(&frame, NRF_FIXED_PAYLOAD_BYTES);
     if (ok)
     {
         _stats.ok++;
