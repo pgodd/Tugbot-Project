@@ -6,7 +6,7 @@
 // -----------------------------------------------------------------------------
 
 #include "TugbotUiOled.h"
-#include "tugbot_config_radio.h"
+#include <tugbot_config_radio.h>
 
 static TugbotUiOled* g_self = nullptr;
 
@@ -17,7 +17,7 @@ static void FmtRate(char* o, size_t n, void*)
         (NRF_DATARATE == RF24_1MBPS) ? "1M" :
         (NRF_DATARATE == RF24_250KBPS) ? "250K" : "2M");
 }
-static void FmtAck(char* o, size_t n, void*) { snprintf(o, n, "%s", NRF_ACK_PAYLOAD ? "ON" : "OFF"); }
+static void FmtAck(char* o, size_t n, void*) { snprintf(o, n, "%s", NRF_USE_ACK_PAYLOAD ? "ON" : "OFF"); }
 
 bool TugbotUiOled::Begin()
 {

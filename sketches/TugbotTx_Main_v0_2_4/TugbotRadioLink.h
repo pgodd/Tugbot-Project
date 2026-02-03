@@ -10,8 +10,8 @@
 #include <RF24.h>
 
 #include "pins_transmitter_wroom.h"
-#include "tugbot_config_radio.h"
-#include "tugbot_cmd_frames.h"
+#include <tugbot_config_radio.h>
+#include <tugbot_cmd_frames.h>
 
 class TugbotRadioLink
 {

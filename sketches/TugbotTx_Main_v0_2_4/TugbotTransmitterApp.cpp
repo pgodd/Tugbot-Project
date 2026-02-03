@@ -7,8 +7,8 @@
 
 #include "TugbotTransmitterApp.h"
 
-#include "tugbot_cmd_frames.h"
-#include "tugbot_config_radio.h"
+#include <tugbot_cmd_frames.h>
+#include <tugbot_config_radio.h>
 #include "pins_transmitter_wroom.h"
 
 static TugbotTransmitterApp* g_app = nullptr;
