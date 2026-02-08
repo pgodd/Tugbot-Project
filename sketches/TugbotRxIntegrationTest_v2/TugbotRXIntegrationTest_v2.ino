@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+I'm// -----------------------------------------------------------------------------
 // File:        TugbotIntegrationTest_v2.ino
 // Project:     Tugbot
 // Role:        UNCLASSIFIED
@@ -66,7 +66,7 @@ Servo                 g_rudderServo;
 
 uint32_t g_lastUpdateMs = 0;
 uint32_t g_serialStartMs = 0;
-uint32_t g_radioInitAfterMs = 0;
+uint32_t g_radioInitAfterMs = 0;//@@@@@@@@
 bool     g_radioReady = false;
 
 static const uint32_t kRadioCmdTimeoutMs = 600;
@@ -147,8 +147,9 @@ static void initRadioIfReady(uint32_t now)
 void setup()
 {
     Serial.begin(115200);
+    initRadioIfReady(millis());
     g_serialStartMs = millis();
-    g_radioInitAfterMs = g_serialStartMs + NRF_SERIAL_SETTLE_MS;
+
 
     Serial.println();
     Serial.println(F("TugbotIntegrationTest_v2 starting..."));
@@ -251,7 +252,7 @@ void setup()
     stepPrint(F("STEP 9: BTS7960 enabled OK"));
 
     // STEP 10: Radio begin is deferred until Serial settle timeout
-    stepPrint(F("STEP 10: radio init deferred for serial settle."));
+    //stepPrint(F("STEP 10: radio init deferred for serial settle."));
 
     Serial.println(F("Entering integration test loop..."));
     Serial.flush();
