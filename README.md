@@ -71,10 +71,6 @@ Old man wisdom: *A boat that fails silently is worse than one that fails loudly.
   * Fail counters and timeouts
   * Optional AckPayload usage
 
-Canon radio note:
-
-> Always allow ~2 seconds after `Serial.begin()` before initializing or printing NRF status.
-
 ---
 
 ## Repository Structure

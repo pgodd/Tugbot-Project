@@ -7,8 +7,8 @@
 
 #include "TugbotTransmitterApp.h"
 
-#include "tugbot_cmd_frames.h"
-#include "tugbot_config_radio.h"
+#include <tugbot_cmd_frames.h>
+#include <tugbot_config_radio.h>
 #include "pins_transmitter_wroom.h"
 
 static TugbotTransmitterApp* g_app = nullptr;
@@ -28,7 +28,6 @@ bool TugbotTransmitterApp::Begin()
     g_app = this;
 
     Serial.begin(115200);
-    delay(NRF_SERIAL_SETTLE_MS);
 
     Serial.println();
     Serial.println("TugbotTx_Main_v0_2_4 (3 encoders + OTA)");
