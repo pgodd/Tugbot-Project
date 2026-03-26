@@ -2,11 +2,11 @@
   TugBot TX (ESP32-WROOM) — Protocol v2 + OLED + NRF24 + KY-040 (state-table) + On-demand WiFi/OTA
   ------------------------------------------------------------------------------------------------
   CANON control mapping:
-    - Throttle: Encoder 2 (ENC2 A=26 B=14)
-    - Rudder:   Encoder 1 (ENC1 A=32 B=33)
-    - ARM:      ENC2 button (PIN_ENC2_BTN = 13)  [throttle actuator button]
-    - Accessory select: NEXT = ENC1 button (25), PREV = ENC3 button (4)
-    - Accessory value: Encoder 3 (ENC3 A=16 B=17)
+    - Throttle: THROTTLEPOT (A=26 B=14)
+    - Rudder:   RUDDERPOT (A=32 B=33)
+    - ARM:      THROTTLEPOT button (PIN_THROTTLEPOT_BTN = 13)  [throttle actuator button]
+    - Accessory select: NEXT = RUDDERPOT button (25), PREV = MENUPOT button (4)
+    - Accessory value: MENUPOT (A=16 B=17)
 
   WiFi/OTA:
     - Dedicated WiFi button on GPIO34 (external 10k pull-up to 3.3V, button to GND)
@@ -58,17 +58,17 @@ static const uint8_t PIN_I2C_SDA  = 21;
 static const uint8_t PIN_I2C_SCL  = 22;
 
 // Rotary encoders (KY-040)
-static const uint8_t PIN_ENC1_A   = 32;
-static const uint8_t PIN_ENC1_B   = 33;
-static const uint8_t PIN_ENC1_BTN = 25;
+static const uint8_t PIN_RUDDERPOT_A   = 32;
+static const uint8_t PIN_RUDDERPOT_B   = 33;
+static const uint8_t PIN_RUDDERPOT_BTN = 25;
 
-static const uint8_t PIN_ENC2_A   = 26;
-static const uint8_t PIN_ENC2_B   = 14;
-static const uint8_t PIN_ENC2_BTN = 13;
+static const uint8_t PIN_THROTTLEPOT_A   = 26;
+static const uint8_t PIN_THROTTLEPOT_B   = 14;
+static const uint8_t PIN_THROTTLEPOT_BTN = 13;
 
-static const uint8_t PIN_ENC3_A   = 16;
-static const uint8_t PIN_ENC3_B   = 17;
-static const uint8_t PIN_ENC3_BTN = 4;
+static const uint8_t PIN_MENUPOT_A   = 16;
+static const uint8_t PIN_MENUPOT_B   = 17;
+static const uint8_t PIN_MENUPOT_BTN = 4;
 
 // Dedicated WiFi window button (INPUT-ONLY pin; needs external pull-up)
 static const uint8_t PIN_WIFI_BTN = 34; // External 10k pull-up to 3.3V, button to GND
@@ -141,6 +141,19 @@ static constexpr uint8_t TB_MAX_PAY = (uint8_t)(TB_MAX_AIR - TB_HDR_LEN - TB_CRC
 // UTIL
 // ============================================================================
 static int clampi(int v, int lo, int hi) { if (v < lo) return lo; if (v > hi) return hi; return v; }
+
+static void logBoth(const char* s) {
+  Serial.println(s);
+}
+
+static void logBothf(const char* fmt, ...) {
+  char buf[256];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  Serial.println(buf);
+}
 
 // CRC16-CCITT (0x1021), init 0xFFFF
 static uint16_t TbCrc16Ccitt(const uint8_t* data, size_t len) {
@@ -339,24 +352,51 @@ private:
 // ============================================================================
 class TxInputs {
 public:
-  void begin() {
-    _encThr.begin(PIN_ENC2_A, PIN_ENC2_B, true);
-    _encRud.begin(PIN_ENC1_A, PIN_ENC1_B, true);
-    _encAcc.begin(PIN_ENC3_A, PIN_ENC3_B, true);
+  enum MenuPage : uint8_t {
+    MENU_NONE = 0,
+    MENU_ROOT,
+    MENU_SUBMENU_1,
+    MENU_SUBMENU_2,
+    MENU_SUBMENU_3
+  };
 
-    _btnArm.begin(PIN_ENC2_BTN, true);
-    _btnAccNext.begin(PIN_ENC1_BTN, true);
-    _btnAccPrev.begin(PIN_ENC3_BTN, true);
+  enum UiAction : uint8_t {
+    ACTION_NONE = 0,
+    ACTION_TOGGLE_WIFI
+  };
+
+  void begin() {
+    _encThr.begin(PIN_THROTTLEPOT_A, PIN_THROTTLEPOT_B, true);
+    _encRud.begin(PIN_RUDDERPOT_A, PIN_RUDDERPOT_B, true);
+    _encMenu.begin(PIN_MENUPOT_A, PIN_MENUPOT_B, true);
+
+    _btnArm.begin(PIN_THROTTLEPOT_BTN, true);
+    _btnRudder.begin(PIN_RUDDERPOT_BTN, true);
+    _btnMenu.begin(PIN_MENUPOT_BTN, true);
 
     memset(&_cmd, 0, sizeof(_cmd));
     _armState = false;
     _accIndex = 0;
+    _menuPage = MENU_NONE;
+    _menuSelection = 0;
+    _menuScroll = 0;
+    _pendingAction = ACTION_NONE;
   }
 
   // Update setpoints from encoders/buttons
   void update() {
-    if (_btnAccPrev.fell()) _accIndex = (_accIndex == 0) ? 3 : (uint8_t)(_accIndex - 1);
-    if (_btnAccNext.fell()) _accIndex = (uint8_t)((_accIndex + 1) & 0x03);
+    const bool menuPressed = _btnMenu.fell();
+    (void)_btnRudder.fell(); // RUDDERPOT button intentionally unused for now.
+
+    if (_menuPage != MENU_NONE) {
+      updateMenu(menuPressed);
+      return;
+    }
+
+    if (menuPressed) {
+      enterMenu(MENU_ROOT, 0);
+      return;
+    }
 
     if (_btnArm.fell()) {
       _armState = !_armState;
@@ -372,7 +412,7 @@ public:
     // Optional: you can keep your detent acceleration for big spins
     const int dT = accel((int)_encThr.readAndClear());
     const int dR = accel((int)_encRud.readAndClear());
-    const int dA = accel((int)_encAcc.readAndClear());
+    const int dA = accel((int)_encMenu.readAndClear());
 
     _cmd.throttlePct = (int8_t)clampi((int)_cmd.throttlePct + dT, -100, 100);
     _cmd.rudderPct   = (int8_t)clampi((int)_cmd.rudderPct   + dR, -100, 100);
@@ -387,14 +427,89 @@ public:
 
   const TbCmdV1& setpointCmd() const { return _cmd; }
   uint8_t accIndex() const { return _accIndex; }
+  bool menuActive() const { return _menuPage != MENU_NONE; }
+  MenuPage menuPage() const { return _menuPage; }
+  uint8_t menuSelection() const { return _menuSelection; }
+  uint8_t menuScroll() const { return _menuScroll; }
+  UiAction consumeAction() {
+    const UiAction action = _pendingAction;
+    _pendingAction = ACTION_NONE;
+    return action;
+  }
+
+  const char* menuTitle() const {
+    switch (_menuPage) {
+      case MENU_ROOT: return "Main Menu";
+      case MENU_SUBMENU_1: return "Submenu 1";
+      case MENU_SUBMENU_2: return "Submenu 2";
+      case MENU_SUBMENU_3: return "Options";
+      default: return "";
+    }
+  }
+
+  uint8_t menuItemCount() const {
+    switch (_menuPage) {
+      case MENU_ROOT: return 4;
+      case MENU_SUBMENU_1:
+      case MENU_SUBMENU_2:
+      case MENU_SUBMENU_3:
+        return 4;
+      default:
+        return 0;
+    }
+  }
+
+  const char* menuItemLabel(uint8_t index) const {
+    static const char* const rootItems[] = {
+      "Submenu 1",
+      "Submenu 2",
+      "Options",
+      "Exit"
+    };
+    static const char* const submenu1Items[] = {
+      "Placeholder A",
+      "Placeholder B",
+      "Placeholder C",
+      "Back"
+    };
+    static const char* const submenu2Items[] = {
+      "Placeholder D",
+      "Placeholder E",
+      "Placeholder F",
+      "Back"
+    };
+    static const char* const submenu3Items[] = {
+      "WIFI",
+      "Placeholder H",
+      "Placeholder I",
+      "Back"
+    };
+
+    const char* const* items = nullptr;
+    switch (_menuPage) {
+      case MENU_ROOT: items = rootItems; break;
+      case MENU_SUBMENU_1: items = submenu1Items; break;
+      case MENU_SUBMENU_2: items = submenu2Items; break;
+      case MENU_SUBMENU_3: items = submenu3Items; break;
+      default: return "";
+    }
+
+    return (index < menuItemCount()) ? items[index] : "";
+  }
 
 private:
-  Ky040FixedEncoder _encThr, _encRud, _encAcc;
-  DebouncedButton _btnArm, _btnAccNext, _btnAccPrev;
+  static constexpr uint8_t MENU_VISIBLE_ROWS = 6;
+
+  Ky040FixedEncoder _encThr, _encRud, _encMenu;
+  DebouncedButton _btnArm, _btnRudder, _btnMenu;
 
   TbCmdV1 _cmd{};
   bool _armState = false;
   uint8_t _accIndex = 0;
+  MenuPage _menuPage = MENU_NONE;
+  uint8_t _menuSelection = 0;
+  uint8_t _menuScroll = 0;
+  UiAction _pendingAction = ACTION_NONE;
 
   static constexpr int ACC_STEP = 5;
 
@@ -404,6 +519,52 @@ private:
     if (a >= 3) return detents * 2;
     return detents;
   }
+
+  void enterMenu(MenuPage page, uint8_t selected) {
+    _menuPage = page;
+    _menuSelection = selected;
+    _menuScroll = 0;
+    clampMenuWindow();
+  }
+
+  void updateMenu(bool menuPressed) {
+    const int dMenu = accel((int)_encMenu.readAndClear());
+    if (dMenu != 0) {
+      const int maxIndex = (int)menuItemCount() - 1;
+      _menuSelection = (uint8_t)clampi((int)_menuSelection + dMenu, 0, maxIndex);
+      clampMenuWindow();
+    }
+
+    if (!menuPressed) return;
+
+    if (_menuPage == MENU_ROOT) {
+      switch (_menuSelection) {
+        case 0: enterMenu(MENU_SUBMENU_1, 0); return;
+        case 1: enterMenu(MENU_SUBMENU_2, 0); return;
+        case 2: enterMenu(MENU_SUBMENU_3, 0); return;
+        default:
+          _menuPage = MENU_NONE;
+          return;
+      }
+    }
+
+    if (_menuPage == MENU_SUBMENU_3 && _menuSelection == 0) {
+      _pendingAction = ACTION_TOGGLE_WIFI;
+      return;
+    }
+
+    if (_menuSelection == menuItemCount() - 1) {
+      enterMenu(MENU_ROOT, 0);
+    }
+  }
+
+  void clampMenuWindow() {
+    if (_menuSelection < _menuScroll) _menuScroll = _menuSelection;
+    const uint8_t bottom = (uint8_t)(_menuScroll + MENU_VISIBLE_ROWS - 1);
+    if (_menuSelection > bottom) {
+      _menuScroll = (uint8_t)(_menuSelection - MENU_VISIBLE_ROWS + 1);
+    }
+  }
 };
 
 // ============================================================================
@@ -411,12 +572,12 @@ private:
 // ============================================================================
 class TxRadioLink {
 public:
-  void begin() {
+  bool begin() {
     SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI);
 
     if (!radio.begin()) {
       Serial.println("radio.begin() FAILED");
-      while (true) { delay(1000); }
+      return false;
     }
 
     radio.setChannel(RF_CHANNEL);
@@ -435,6 +596,7 @@ public:
     _lastAckUpdated = false;
     _lastAckMs = millis();
     memset(&_lastAck, 0, sizeof(_lastAck));
+    return true;
   }
 
   bool sendCmd(const TbCmdV1& cmd) {
@@ -517,15 +679,22 @@ public:
     _printedIpThisWindow = false;
 
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
+    // ESP32 WiFi + Classic BT coexistence expects explicit modem sleep.
+    WiFi.setSleep(WIFI_PS_MIN_MODEM);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
     WiFi.disconnect(true);
     delay(50);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
+    WiFi.setSleep(WIFI_PS_MIN_MODEM);
     _lastConnectAttemptMs = now;
 
     Serial.println("WiFi window ENABLED (connecting...)");
+  }
+
+  void disable() {
+    if (!_active && WiFi.getMode() == WIFI_OFF) return;
+    shutdown();
   }
 
   void tick() {
@@ -546,6 +715,7 @@ public:
         WiFi.disconnect(true);
         delay(20);
         WiFi.begin(WIFI_SSID, WIFI_PASS);
+        WiFi.setSleep(WIFI_PS_MIN_MODEM);
       }
       return;
     }
@@ -626,6 +796,7 @@ public:
   void render(const TbCmdV1& setCmd,
               const TbCmdV1& outCmd,
               uint8_t accIndex,
+              const TxInputs& inputs,
               bool linkOk,
               const TbAckV2& ack,
               uint16_t vSysAvg_mV,
@@ -638,6 +809,12 @@ public:
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
+
+    if (inputs.menuActive()) {
+      renderMenu(inputs, wifi);
+      display.display();
+      return;
+    }
 
     String l0 = "ARM:";
     l0 += (outCmd.arm ? "ON " : "OFF");
@@ -727,6 +904,31 @@ private:
     display.setCursor(0, row * 8);
     display.print(s);
   }
+
+  static void printMenuLine(int row, bool selected, const String& label) {
+    display.setCursor(0, row * 8);
+    display.print(selected ? ">" : " ");
+    display.print(label);
+  }
+
+  static void renderMenu(const TxInputs& inputs, const WifiWindowManager& wifi) {
+    printLine(0, String(inputs.menuTitle()));
+    printLine(1, "Turn=scroll Press=sel");
+
+    const uint8_t total = inputs.menuItemCount();
+    const uint8_t scroll = inputs.menuScroll();
+    const uint8_t selected = inputs.menuSelection();
+    const uint8_t visible = min<uint8_t>(total > scroll ? (uint8_t)(total - scroll) : 0, 6);
+
+    for (uint8_t i = 0; i < visible; ++i) {
+      const uint8_t itemIndex = (uint8_t)(scroll + i);
+      String label = inputs.menuItemLabel(itemIndex);
+      if (inputs.menuPage() == TxInputs::MENU_SUBMENU_3 && itemIndex == 0 && wifi.isActive()) {
+        label += " *";
+      }
+      printMenuLine((int)i + 2, itemIndex == selected, label);
+    }
+  }
 };
 
 // ============================================================================
@@ -740,7 +942,6 @@ public:
 
     _ui.begin();
     _inputs.begin();
-    _radio.begin();
     _wifi.begin();
 
     _btnWifi.begin(PIN_WIFI_BTN, false); // external pull-up
@@ -758,11 +959,19 @@ public:
     memset(&_cmdOut, 0, sizeof(_cmdOut));
     memset(&_lastSetCmd, 0, sizeof(_lastSetCmd));
 
-    Serial.println("TX ready (protocol v2) — KY040 table + WiFi window + THR/RUD ramps.");
+    _radioReady = _radio.begin();
+    _lastRadioRetryMs = now;
+
+    logBoth("TX ready (protocol v2) - KY040 table + WiFi window + THR/RUD ramps.");
+    if (!_radioReady) {
+      logBoth("NRF24 init failed. OLED will stay alive while radio retries.");
+    }
   }
 
   void tick() {
     const uint32_t now = millis();
+
+    maintainRadioLink(now);
 
     if (_btnWifi.fell()) {
       _wifi.enableFor(WIFI_WINDOW_MS);
@@ -774,11 +983,12 @@ public:
       _lastSendMs = now;
 
       _inputs.update();
+      handleUiActions();
       const TbCmdV1 setCmd = _inputs.setpointCmd();
 
       applyRamps(setCmd, now);
 
-      const bool ok = _radio.sendCmd(_cmdOut);
+      const bool ok = _radioReady ? _radio.sendCmd(_cmdOut) : false;
       updateTelemetryAverage(now, ok);
 
       if (now - _lastSerialMs >= SERIAL_PERIOD_MS) {
@@ -800,6 +1010,7 @@ public:
       _ui.render(_lastSetCmd,
                  _cmdOut,
                  _inputs.accIndex(),
+                 _inputs,
                  _radio.lastSendOk(),
                  rawAck,
                  vSysOut_mV,
@@ -849,6 +1060,20 @@ private:
   uint16_t _avgVSys_mV = 0;
   uint16_t _avgVProp_mV = 0;
   uint16_t _avgISys_mA = 0;
+  bool _radioReady = false;
+  uint32_t _lastRadioRetryMs = 0;
+
+  void handleUiActions() {
+    switch (_inputs.consumeAction()) {
+      case TxInputs::ACTION_TOGGLE_WIFI:
+        if (_wifi.isActive()) _wifi.disable();
+        else _wifi.enableFor(WIFI_WINDOW_MS);
+        break;
+      case TxInputs::ACTION_NONE:
+      default:
+        break;
+    }
+  }
 
   void applyRamps(const TbCmdV1& setCmd, uint32_t nowMs) {
     _cmdOut.arm = setCmd.arm;
@@ -884,44 +1109,43 @@ private:
     uint16_t vPropOut_mV = ack.vProp_mV;
     uint16_t iSysOut_mA = ack.iSys_mA;
     getDisplayTelemetry(vSysOut_mV, vPropOut_mV, iSysOut_mA);
+    char line[256];
+    snprintf(line, sizeof(line),
+             "TX %s thr=%d(%d) rud=%d(%d) arm=%d acc%u=%d",
+             lastSendOk ? "OK" : "FAIL",
+             (int)_cmdOut.throttlePct, (int)setCmd.throttlePct,
+             (int)_cmdOut.rudderPct,   (int)setCmd.rudderPct,
+             (int)_cmdOut.arm,
+             (unsigned int)(_inputs.accIndex() + 1),
+             (int)_cmdOut.acc[_inputs.accIndex()]);
 
-    Serial.print("TX ");
-    Serial.print(lastSendOk ? "OK " : "FAIL ");
-
-    Serial.print("thr="); Serial.print((int)_cmdOut.throttlePct);
-    Serial.print("(");    Serial.print((int)setCmd.throttlePct); Serial.print(")");
-
-    Serial.print(" rud="); Serial.print((int)_cmdOut.rudderPct);
-    Serial.print("(");     Serial.print((int)setCmd.rudderPct); Serial.print(")");
-
-    Serial.print(" arm="); Serial.print((int)_cmdOut.arm);
-    Serial.print(" acc"); Serial.print(_inputs.accIndex() + 1);
-    Serial.print("="); Serial.print((int)_cmdOut.acc[_inputs.accIndex()]);
+    String msg(line);
 
     if (lastSendOk) {
-      Serial.print(" | ACK st="); Serial.print((int)ack.status);
-      Serial.print(" ok=");       Serial.print(ack.rxOk);
-      Serial.print(" bad=");      Serial.print(ack.rxBad);
-      Serial.print(" Vsys(V)=");  Serial.print(vSysOut_mV / 1000.0f, 3);
-      Serial.print(" Isys(mA)=");
-      if (iSysOut_mA < 1000) Serial.print('0');
-      if (iSysOut_mA < 100)  Serial.print('0');
-      if (iSysOut_mA < 10)   Serial.print('0');
-      Serial.print(iSysOut_mA);
+      char ackBuf[128];
+      snprintf(ackBuf, sizeof(ackBuf),
+               " | ACK st=%d ok=%u bad=%u Vsys(V)=%.3f Isys(mA)=%04u",
+               (int)ack.status,
+               (unsigned int)ack.rxOk,
+               (unsigned int)ack.rxBad,
+               vSysOut_mV / 1000.0f,
+               (unsigned int)iSysOut_mA);
+      msg += ackBuf;
     }
 
     if (_wifi.isActive()) {
-      Serial.print(" | WiFiWin ");
-      Serial.print(_wifi.isConnected() ? "ON " : "CONN ");
-      Serial.print((_wifi.remainingMs() / 1000));
-      Serial.print("s");
+      char wifiBuf[96];
+      snprintf(wifiBuf, sizeof(wifiBuf), " | WiFiWin %s %lus",
+               _wifi.isConnected() ? "ON" : "CONN",
+               (unsigned long)(_wifi.remainingMs() / 1000));
+      msg += wifiBuf;
       if (_wifi.isConnected()) {
-        Serial.print(" IP=");
-        Serial.print(_wifi.ip());
+        msg += " IP=";
+        msg += _wifi.ip().toString();
       }
     }
 
-    Serial.println();
+    logBoth(msg.c_str());
   }
 
   void updateTelemetryAverage(uint32_t now, bool sendOk) {
@@ -953,6 +1177,20 @@ private:
     vSys_mV = _avgVSys_mV;
     vProp_mV = _avgVProp_mV;
     iSys_mA = _avgISys_mA;
+  }
+
+  void maintainRadioLink(uint32_t now) {
+    static constexpr uint32_t RADIO_RETRY_MS = 2000;
+    if (_radioReady) return;
+    if (now - _lastRadioRetryMs < RADIO_RETRY_MS) return;
+
+    _lastRadioRetryMs = now;
+    _radioReady = _radio.begin();
+    if (_radioReady) {
+      logBoth("NRF24 init recovered.");
+    } else {
+      Serial.println("NRF24 retry failed.");
+    }
   }
 };
 
