@@ -1,5 +1,5 @@
 /*
-  TugBot TX (ESP32-WROOM) — Protocol v2 + OLED + NRF24 + KY-040 (state-table) + On-demand WiFi/OTA
+  TugBot TX (ESP32-WROOM) — Protocol v2 + OLED + NRF24 + KY-040 (state-table) + Toggleable WiFi/OTA
   ------------------------------------------------------------------------------------------------
   CANON control mapping:
     - Throttle: THROTTLEPOT (A=26 B=14)
@@ -7,11 +7,6 @@
     - ARM:      THROTTLEPOT button (PIN_THROTTLEPOT_BTN = 13)  [throttle actuator button]
     - Accessory select: NEXT = RUDDERPOT button (25), PREV = MENUPOT button (4)
     - Accessory value: MENUPOT (A=16 B=17)
-
-  WiFi/OTA:
-    - Dedicated WiFi button on GPIO34 (external 10k pull-up to 3.3V, button to GND)
-    - WiFi/OTA OFF by default; press WiFi button to open OTA window (3 minutes)
-    - WiFi TX power reduced during window to help nRF coexistence
 
   Encoders:
     - KY-040 fixed state-table decoder (Buxtronix/ownprox style)
@@ -27,6 +22,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RF24.h>
+#include <stdarg.h>
 
 #include <WiFi.h>
 #include <ArduinoOTA.h>
@@ -70,7 +66,7 @@ static const uint8_t PIN_MENUPOT_A   = 16;
 static const uint8_t PIN_MENUPOT_B   = 17;
 static const uint8_t PIN_MENUPOT_BTN = 4;
 
-// Dedicated WiFi window button (INPUT-ONLY pin; needs external pull-up)
+// Dedicated WiFi toggle button (INPUT-ONLY pin; needs external pull-up)
 static const uint8_t PIN_WIFI_BTN = 34; // External 10k pull-up to 3.3V, button to GND
 
 // ============================================================================
@@ -290,9 +286,10 @@ public:
     _debounceMs = debounceMs;
     if (useInternalPullup) pinMode(_pin, INPUT_PULLUP);
     else pinMode(_pin, INPUT);
-    _stable = true;
-    _lastStable = true;
-    _lastEdgeMs = 0;
+    const bool now = digitalRead(_pin);
+    _stable = now;
+    _lastStable = now;
+    _lastEdgeMs = millis();
   }
 
   bool fell() {
@@ -362,7 +359,8 @@ public:
 
   enum UiAction : uint8_t {
     ACTION_NONE = 0,
-    ACTION_TOGGLE_WIFI
+    ACTION_TOGGLE_WIFI,
+    ACTION_TOGGLE_OTA
   };
 
   void begin() {
@@ -390,12 +388,8 @@ public:
 
     if (_menuPage != MENU_NONE) {
       updateMenu(menuPressed);
-      return;
-    }
-
-    if (menuPressed) {
+    } else if (menuPressed) {
       enterMenu(MENU_ROOT, 0);
-      return;
     }
 
     if (_btnArm.fell()) {
@@ -412,7 +406,7 @@ public:
     // Optional: you can keep your detent acceleration for big spins
     const int dT = accel((int)_encThr.readAndClear());
     const int dR = accel((int)_encRud.readAndClear());
-    const int dA = accel((int)_encMenu.readAndClear());
+    const int dA = (_menuPage == MENU_NONE) ? accel((int)_encMenu.readAndClear()) : 0;
 
     _cmd.throttlePct = (int8_t)clampi((int)_cmd.throttlePct + dT, -100, 100);
     _cmd.rudderPct   = (int8_t)clampi((int)_cmd.rudderPct   + dR, -100, 100);
@@ -461,28 +455,28 @@ public:
 
   const char* menuItemLabel(uint8_t index) const {
     static const char* const rootItems[] = {
+      "Exit",
       "Submenu 1",
       "Submenu 2",
-      "Options",
-      "Exit"
+      "Options"
     };
     static const char* const submenu1Items[] = {
+      "Back",
       "Placeholder A",
       "Placeholder B",
-      "Placeholder C",
-      "Back"
+      "Placeholder C"
     };
     static const char* const submenu2Items[] = {
+      "Back",
       "Placeholder D",
       "Placeholder E",
-      "Placeholder F",
-      "Back"
+      "Placeholder F"
     };
     static const char* const submenu3Items[] = {
+      "Back",
       "WIFI",
-      "Placeholder H",
-      "Placeholder I",
-      "Back"
+      "OTA",
+      "Placeholder I"
     };
 
     const char* const* items = nullptr;
@@ -539,22 +533,31 @@ private:
 
     if (_menuPage == MENU_ROOT) {
       switch (_menuSelection) {
-        case 0: enterMenu(MENU_SUBMENU_1, 0); return;
-        case 1: enterMenu(MENU_SUBMENU_2, 0); return;
-        case 2: enterMenu(MENU_SUBMENU_3, 0); return;
+        case 0:
+          _menuPage = MENU_NONE;
+          return;
+        case 1: enterMenu(MENU_SUBMENU_1, 0); return;
+        case 2: enterMenu(MENU_SUBMENU_2, 0); return;
+        case 3: enterMenu(MENU_SUBMENU_3, 0); return;
         default:
           _menuPage = MENU_NONE;
           return;
       }
     }
 
-    if (_menuPage == MENU_SUBMENU_3 && _menuSelection == 0) {
+    if (_menuSelection == 0) {
+      enterMenu(MENU_ROOT, 0);
+      return;
+    }
+
+    if (_menuPage == MENU_SUBMENU_3 && _menuSelection == 1) {
       _pendingAction = ACTION_TOGGLE_WIFI;
       return;
     }
 
-    if (_menuSelection == menuItemCount() - 1) {
-      enterMenu(MENU_ROOT, 0);
+    if (_menuPage == MENU_SUBMENU_3 && _menuSelection == 2) {
+      _pendingAction = ACTION_TOGGLE_OTA;
+      return;
     }
   }
 
@@ -654,7 +657,7 @@ private:
 };
 
 // ============================================================================
-// WiFi/OTA window manager
+// WiFi + OTA manager
 // ============================================================================
 class WifiWindowManager {
 public:
@@ -662,7 +665,7 @@ public:
     _active = false;
     _connected = false;
     _otaStarted = false;
-    _windowEndMs = 0;
+    _otaEnabled = false;
     _lastConnectAttemptMs = 0;
     _printedIpThisWindow = false;
 
@@ -670,16 +673,14 @@ public:
     delay(10);
   }
 
-  void enableFor(uint32_t durationMs) {
+  void enable() {
     const uint32_t now = millis();
-    _windowEndMs = now + durationMs;
     _active = true;
     _connected = false;
-    _otaStarted = false;
     _printedIpThisWindow = false;
 
     WiFi.mode(WIFI_STA);
-    // ESP32 WiFi + Classic BT coexistence expects explicit modem sleep.
+    // Keep WiFi power modest to reduce 2.4 GHz contention with the nRF24 link.
     WiFi.setSleep(WIFI_PS_MIN_MODEM);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
@@ -689,7 +690,7 @@ public:
     WiFi.setSleep(WIFI_PS_MIN_MODEM);
     _lastConnectAttemptMs = now;
 
-    Serial.println("WiFi window ENABLED (connecting...)");
+    Serial.println("WiFi ENABLED (connecting...)");
   }
 
   void disable() {
@@ -701,11 +702,6 @@ public:
     const uint32_t now = millis();
 
     if (!_active) return;
-
-    if ((int32_t)(now - _windowEndMs) >= 0) {
-      shutdown();
-      return;
-    }
 
     _connected = (WiFi.status() == WL_CONNECTED);
 
@@ -726,25 +722,32 @@ public:
       Serial.println(WiFi.localIP());
     }
 
-    if (!_otaStarted) {
+    if (_otaEnabled && !_otaStarted) {
       ArduinoOTA.begin(WiFi.localIP(), "TugbotTx", OTA_PASS, InternalStorage);
       _otaStarted = true;
       Serial.println("ArduinoOTA ready.");
     }
 
-    ArduinoOTA.handle();
+    if (_otaEnabled && _otaStarted) {
+      ArduinoOTA.handle();
+    }
   }
 
   bool isActive() const { return _active; }
   bool isConnected() const { return _connected; }
-  uint32_t remainingMs() const {
-    if (!_active) return 0;
-    const uint32_t now = millis();
-    if ((int32_t)(now - _windowEndMs) >= 0) return 0;
-    return _windowEndMs - now;
-  }
-
+  bool isOtaActive() const { return _otaEnabled; }
   IPAddress ip() const { return WiFi.localIP(); }
+
+  void setOtaEnabled(bool enabled) {
+    if (_otaEnabled == enabled) return;
+    _otaEnabled = enabled;
+
+    if (!_otaEnabled && _otaStarted) {
+      ArduinoOTA.end();
+      _otaStarted = false;
+      Serial.println("ArduinoOTA stopped.");
+    }
+  }
 
 private:
   static constexpr uint32_t CONNECT_RETRY_MS = 5000;
@@ -752,13 +755,15 @@ private:
   bool _active = false;
   bool _connected = false;
   bool _otaStarted = false;
+  bool _otaEnabled = false;
   bool _printedIpThisWindow = false;
-
-  uint32_t _windowEndMs = 0;
   uint32_t _lastConnectAttemptMs = 0;
 
   void shutdown() {
-    Serial.println("WiFi window EXPIRED -> WiFi OFF");
+    if (_otaStarted) {
+      ArduinoOTA.end();
+    }
+    Serial.println("WiFi OFF");
     _active = false;
     _connected = false;
     _otaStarted = false;
@@ -834,7 +839,7 @@ public:
     l2 += String(accIndex + 1);
     l2 += ": ";
     l2 += String((int)outCmd.acc[accIndex]);
-    l2 += " (BTN1/3 sel)";
+    l2 += " (RUDDER/MENU btn)";
     printLine(2, l2);
 
     String l3 = "Vsys:";
@@ -860,30 +865,21 @@ public:
     printLine(5, l5);
 
     if (!wifi.isActive()) {
-      printLine(6, "WiFi:OFF  (BTN WiFi)");
-      printLine(7, "OTA:OFF  Btn34->ON");
+      printLine(6, "WiFi:OFF  Btn34/menu");
+      printLine(7, String("OTA:") + (wifi.isOtaActive() ? "ON" : "OFF"));
+    } else if (!wifi.isConnected()) {
+      printLine(6, "WiFi:CONN");
+      printLine(7, String("OTA:") + (wifi.isOtaActive() ? "ON" : "OFF"));
     } else {
-      uint32_t remS = wifi.remainingMs() / 1000;
-      if (!wifi.isConnected()) {
-        String w = "WiFi:CONN ";
-        w += String(remS);
-        w += "s";
-        printLine(6, w);
-        printLine(7, "OTA:WAIT  Btn34=+3m");
-      } else {
-        String w = "WiFi:ON ";
-        w += String(remS);
-        w += "s";
-        printLine(6, w);
+      printLine(6, String("WiFi:ON OTA:") + (wifi.isOtaActive() ? "ON" : "OFF"));
 
-        IPAddress ip = wifi.ip();
-        String ipLine = "IP:";
-        ipLine += String(ip[0]); ipLine += ".";
-        ipLine += String(ip[1]); ipLine += ".";
-        ipLine += String(ip[2]); ipLine += ".";
-        ipLine += String(ip[3]);
-        printLine(7, ipLine);
-      }
+      IPAddress ip = wifi.ip();
+      String ipLine = "IP:";
+      ipLine += String(ip[0]); ipLine += ".";
+      ipLine += String(ip[1]); ipLine += ".";
+      ipLine += String(ip[2]); ipLine += ".";
+      ipLine += String(ip[3]);
+      printLine(7, ipLine);
     }
 
     display.display();
@@ -923,8 +919,9 @@ private:
     for (uint8_t i = 0; i < visible; ++i) {
       const uint8_t itemIndex = (uint8_t)(scroll + i);
       String label = inputs.menuItemLabel(itemIndex);
-      if (inputs.menuPage() == TxInputs::MENU_SUBMENU_3 && itemIndex == 0 && wifi.isActive()) {
-        label += " *";
+      if (inputs.menuPage() == TxInputs::MENU_SUBMENU_3) {
+        if (itemIndex == 1 && wifi.isActive()) label += " *";
+        if (itemIndex == 2 && wifi.isOtaActive()) label += " *";
       }
       printMenuLine((int)i + 2, itemIndex == selected, label);
     }
@@ -962,7 +959,7 @@ public:
     _radioReady = _radio.begin();
     _lastRadioRetryMs = now;
 
-    logBoth("TX ready (protocol v2) - KY040 table + WiFi window + THR/RUD ramps.");
+    logBoth("TX ready (protocol v2) - KY040 table + WiFi/OTA toggles + THR/RUD ramps.");
     if (!_radioReady) {
       logBoth("NRF24 init failed. OLED will stay alive while radio retries.");
     }
@@ -974,10 +971,12 @@ public:
     maintainRadioLink(now);
 
     if (_btnWifi.fell()) {
-      _wifi.enableFor(WIFI_WINDOW_MS);
+      if (_wifi.isActive()) _wifi.disable();
+      else _wifi.enable();
     }
 
     _wifi.tick();
+    maintainWifiConsole();
 
     if (now - _lastSendMs >= SEND_PERIOD_MS) {
       _lastSendMs = now;
@@ -1026,9 +1025,9 @@ private:
   static constexpr uint32_t OLED_PERIOD_MS   = 200;
   static constexpr uint32_t SERIAL_PERIOD_MS = 1000;
   static constexpr uint32_t TELEMETRY_AVG_MS = 10000;
-  static constexpr uint32_t WIFI_WINDOW_MS   = 180000; // 3 minutes
+  static constexpr uint16_t CONSOLE_PORT = 23;
 
-  // Ramp tuning (pct per second). Tweak these to taste.
+  // Ramp tuning defaults (pct per second).
   static constexpr float THR_RATE_UP_PPS   = 35.0f;   // slow acceleration
   static constexpr float THR_RATE_DOWN_PPS = 80.0f;   // faster decel (safety)
   static constexpr float RUD_RATE_PPS      = 220.0f;  // rudder ramp
@@ -1062,12 +1061,25 @@ private:
   uint16_t _avgISys_mA = 0;
   bool _radioReady = false;
   uint32_t _lastRadioRetryMs = 0;
+  float _thrRateUpPps = THR_RATE_UP_PPS;
+  float _thrRateDownPps = THR_RATE_DOWN_PPS;
+  float _rudRatePps = RUD_RATE_PPS;
+  WiFiServer _consoleServer{CONSOLE_PORT};
+  WiFiClient _consoleClient{};
+  bool _consoleServerStarted = false;
+  char _consoleLineBuf[128] = {0};
+  uint8_t _consoleLineLen = 0;
+  uint8_t _telnetSkipBytes = 0;
+  bool _consoleTelemetryEnabled = true;
 
   void handleUiActions() {
     switch (_inputs.consumeAction()) {
       case TxInputs::ACTION_TOGGLE_WIFI:
         if (_wifi.isActive()) _wifi.disable();
-        else _wifi.enableFor(WIFI_WINDOW_MS);
+        else _wifi.enable();
+        break;
+      case TxInputs::ACTION_TOGGLE_OTA:
+        _wifi.setOtaEnabled(!_wifi.isOtaActive());
         break;
       case TxInputs::ACTION_NONE:
       default:
@@ -1096,8 +1108,8 @@ private:
 
     const float dtSec = (float)dtMs / 1000.0f;
 
-    const float thr = _thrRamp.update((float)setCmd.throttlePct, dtSec, THR_RATE_UP_PPS, THR_RATE_DOWN_PPS);
-    const float rud = _rudRamp.update((float)setCmd.rudderPct,   dtSec, RUD_RATE_PPS,    RUD_RATE_PPS);
+    const float thr = _thrRamp.update((float)setCmd.throttlePct, dtSec, _thrRateUpPps, _thrRateDownPps);
+    const float rud = _rudRamp.update((float)setCmd.rudderPct,   dtSec, _rudRatePps,   _rudRatePps);
 
     _cmdOut.throttlePct = (int8_t)clampi((int)lroundf(thr), -100, 100);
     _cmdOut.rudderPct   = (int8_t)clampi((int)lroundf(rud), -100, 100);
@@ -1135,9 +1147,9 @@ private:
 
     if (_wifi.isActive()) {
       char wifiBuf[96];
-      snprintf(wifiBuf, sizeof(wifiBuf), " | WiFiWin %s %lus",
+      snprintf(wifiBuf, sizeof(wifiBuf), " | WiFi %s OTA %s",
                _wifi.isConnected() ? "ON" : "CONN",
-               (unsigned long)(_wifi.remainingMs() / 1000));
+               _wifi.isOtaActive() ? "ON" : "OFF");
       msg += wifiBuf;
       if (_wifi.isConnected()) {
         msg += " IP=";
@@ -1146,6 +1158,9 @@ private:
     }
 
     logBoth(msg.c_str());
+    if (_consoleTelemetryEnabled) {
+      consolePrintLine(msg.c_str());
+    }
   }
 
   void updateTelemetryAverage(uint32_t now, bool sendOk) {
@@ -1191,6 +1206,281 @@ private:
     } else {
       Serial.println("NRF24 retry failed.");
     }
+  }
+
+  void maintainWifiConsole() {
+    if (!_wifi.isConnected()) {
+      stopConsoleServer();
+      return;
+    }
+
+    if (!_consoleServerStarted) {
+      _consoleServer.begin();
+      _consoleServer.setNoDelay(true);
+      _consoleServerStarted = true;
+      Serial.printf("WiFi terminal listening on port %u\r\n", (unsigned int)CONSOLE_PORT);
+    }
+
+    WiFiClient candidate = _consoleServer.available();
+    if (candidate) {
+      if (_consoleClient && _consoleClient.connected()) {
+        _consoleClient.println("Another client connected. Closing this session.");
+        _consoleClient.stop();
+      }
+      _consoleClient = candidate;
+      _consoleClient.setNoDelay(true);
+      _consoleLineLen = 0;
+      _telnetSkipBytes = 0;
+      printConsoleHelp();
+      printConsoleStatus();
+    }
+
+    if (!_consoleClient || !_consoleClient.connected()) return;
+
+    while (_consoleClient.available()) {
+      const uint8_t raw = (uint8_t)_consoleClient.read();
+
+      if (_telnetSkipBytes > 0) {
+        _telnetSkipBytes--;
+        continue;
+      }
+
+      // Ignore Telnet IAC negotiation bytes so terminal clients can talk plain text.
+      if (raw == 255U) {
+        _telnetSkipBytes = 2;
+        continue;
+      }
+
+      if (raw == 0U) continue;
+
+      const char ch = (char)raw;
+      if (ch == '\r' || ch == '\n') {
+        _consoleLineBuf[_consoleLineLen] = '\0';
+        if (_consoleLineLen > 0) processConsoleCommand(_consoleLineBuf);
+        _consoleLineLen = 0;
+        continue;
+      }
+      if (ch < 32 || ch > 126) continue;
+
+      if (_consoleLineLen + 1 < sizeof(_consoleLineBuf)) {
+        _consoleLineBuf[_consoleLineLen++] = ch;
+      }
+    }
+  }
+
+  void stopConsoleServer() {
+    if (_consoleClient) _consoleClient.stop();
+    if (_consoleServerStarted) {
+      _consoleServer.stop();
+      _consoleServerStarted = false;
+    }
+    _consoleLineLen = 0;
+    _telnetSkipBytes = 0;
+  }
+
+  void consolePrintf(const char* fmt, ...) {
+    if (!_consoleClient || !_consoleClient.connected()) return;
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    _consoleClient.print(buf);
+  }
+
+  void consolePrintLine(const char* s) {
+    if (!_consoleClient || !_consoleClient.connected()) return;
+    _consoleClient.println(s);
+  }
+
+  void printConsoleHelp() {
+    consolePrintLine("");
+    consolePrintLine("TugBot TX WiFi terminal");
+    consolePrintLine("Commands: help, status, vars, get <name>, set <name> <value>");
+    consolePrintLine("          wifi on|off, ota on|off, telemetry on|off, reboot");
+    consolePrintLine("Vars: thr_rate_up, thr_rate_down, rud_rate");
+  }
+
+  void printConsoleStatus() {
+    const TbAckV2& ack = _radio.lastAck();
+    const uint32_t ackAge = millis() - _radio.lastAckMs();
+    consolePrintf("link=%s ackAge=%lums radioReady=%u wifi=%s ota=%s\r\n",
+                  _radio.lastSendOk() ? "OK" : "FAIL",
+                  (unsigned long)ackAge,
+                  (unsigned int)_radioReady,
+                  _wifi.isActive() ? (_wifi.isConnected() ? "connected" : "starting") : "off",
+                  _wifi.isOtaActive() ? "on" : "off");
+    consolePrintf("thr_out=%d thr_set=%d rud_out=%d rud_set=%d arm=%u acc1=%u\r\n",
+                  (int)_cmdOut.throttlePct,
+                  (int)_lastSetCmd.throttlePct,
+                  (int)_cmdOut.rudderPct,
+                  (int)_lastSetCmd.rudderPct,
+                  (unsigned int)_cmdOut.arm,
+                  (unsigned int)_cmdOut.acc[0]);
+    consolePrintf("rx_ok=%u rx_bad=%u vsys=%umV vprop=%umV isys=%umA water=%u\r\n",
+                  (unsigned int)ack.rxOk,
+                  (unsigned int)ack.rxBad,
+                  (unsigned int)ack.vSys_mV,
+                  (unsigned int)ack.vProp_mV,
+                  (unsigned int)ack.iSys_mA,
+                  (unsigned int)ack.waterRaw);
+    consolePrintf("telemetry=%s\r\n", _consoleTelemetryEnabled ? "on" : "off");
+    printConsoleVars();
+  }
+
+  void printConsoleVars() {
+    consolePrintf("thr_rate_up=%.2f\r\n", _thrRateUpPps);
+    consolePrintf("thr_rate_down=%.2f\r\n", _thrRateDownPps);
+    consolePrintf("rud_rate=%.2f\r\n", _rudRatePps);
+  }
+
+  bool printVarValue(const char* name) {
+    if (strcmp(name, "thr_rate_up") == 0) {
+      consolePrintf("thr_rate_up=%.2f\r\n", _thrRateUpPps);
+      return true;
+    }
+    if (strcmp(name, "thr_rate_down") == 0) {
+      consolePrintf("thr_rate_down=%.2f\r\n", _thrRateDownPps);
+      return true;
+    }
+    if (strcmp(name, "rud_rate") == 0) {
+      consolePrintf("rud_rate=%.2f\r\n", _rudRatePps);
+      return true;
+    }
+    return false;
+  }
+
+  bool setVarValue(const char* name, const char* value) {
+    if (strcmp(name, "thr_rate_up") == 0) {
+      const float v = atof(value);
+      if (v <= 0.0f) return false;
+      _thrRateUpPps = v;
+      return true;
+    }
+    if (strcmp(name, "thr_rate_down") == 0) {
+      const float v = atof(value);
+      if (v <= 0.0f) return false;
+      _thrRateDownPps = v;
+      return true;
+    }
+    if (strcmp(name, "rud_rate") == 0) {
+      const float v = atof(value);
+      if (v <= 0.0f) return false;
+      _rudRatePps = v;
+      return true;
+    }
+    return false;
+  }
+
+  void processConsoleCommand(char* line) {
+    while (*line == ' ' || *line == '\t') line++;
+    char* end = line + strlen(line);
+    while (end > line && (end[-1] == ' ' || end[-1] == '\t')) --end;
+    *end = '\0';
+
+    for (char* p = line; *p; ++p) *p = (char)tolower((unsigned char)*p);
+    if (*line == '\0') return;
+
+    consolePrintf("> %s\r\n", line);
+
+    char* save = nullptr;
+    char* cmd = strtok_r(line, " \t", &save);
+    if (cmd == nullptr) return;
+
+    if (strcmp(cmd, "help") == 0) {
+      printConsoleHelp();
+      return;
+    }
+    if (strcmp(cmd, "status") == 0) {
+      printConsoleStatus();
+      return;
+    }
+    if (strcmp(cmd, "vars") == 0) {
+      printConsoleVars();
+      return;
+    }
+    if (strcmp(cmd, "get") == 0) {
+      char* name = strtok_r(nullptr, " \t", &save);
+      if (name == nullptr || !printVarValue(name)) {
+        consolePrintLine("Unknown variable.");
+      }
+      return;
+    }
+    if (strcmp(cmd, "set") == 0) {
+      char* name = strtok_r(nullptr, " \t", &save);
+      char* value = strtok_r(nullptr, " \t", &save);
+      if (name == nullptr || value == nullptr || !setVarValue(name, value)) {
+        consolePrintLine("Set failed. Usage: set <name> <value>");
+        return;
+      }
+      printVarValue(name);
+      return;
+    }
+    if (strcmp(cmd, "wifi") == 0) {
+      char* state = strtok_r(nullptr, " \t", &save);
+      if (state == nullptr) {
+        consolePrintLine("Usage: wifi on|off");
+        return;
+      }
+      if (strcmp(state, "on") == 0) {
+        _wifi.enable();
+        consolePrintLine("WiFi enabling.");
+        return;
+      }
+      if (strcmp(state, "off") == 0) {
+        _wifi.disable();
+        consolePrintLine("WiFi disabled.");
+        return;
+      }
+      consolePrintLine("Usage: wifi on|off");
+      return;
+    }
+    if (strcmp(cmd, "ota") == 0) {
+      char* state = strtok_r(nullptr, " \t", &save);
+      if (state == nullptr) {
+        consolePrintLine("Usage: ota on|off");
+        return;
+      }
+      if (strcmp(state, "on") == 0) {
+        _wifi.setOtaEnabled(true);
+        consolePrintLine("OTA enabled.");
+        return;
+      }
+      if (strcmp(state, "off") == 0) {
+        _wifi.setOtaEnabled(false);
+        consolePrintLine("OTA disabled.");
+        return;
+      }
+      consolePrintLine("Usage: ota on|off");
+      return;
+    }
+    if (strcmp(cmd, "telemetry") == 0) {
+      char* state = strtok_r(nullptr, " \t", &save);
+      if (state == nullptr) {
+        consolePrintLine("Usage: telemetry on|off");
+        return;
+      }
+      if (strcmp(state, "on") == 0) {
+        _consoleTelemetryEnabled = true;
+        consolePrintLine("Telemetry output enabled.");
+        return;
+      }
+      if (strcmp(state, "off") == 0) {
+        _consoleTelemetryEnabled = false;
+        consolePrintLine("Telemetry output ignored.");
+        return;
+      }
+      consolePrintLine("Usage: telemetry on|off");
+      return;
+    }
+    if (strcmp(cmd, "reboot") == 0) {
+      consolePrintLine("Rebooting transmitter...");
+      delay(50);
+      ESP.restart();
+      return;
+    }
+
+    consolePrintLine("Unknown command. Type: help");
   }
 };
 
